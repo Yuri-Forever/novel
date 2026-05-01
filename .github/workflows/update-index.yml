@@ -1,0 +1,84 @@
+name: Update Chapter Index
+
+on:
+  push:
+    paths:
+      - 'chapters/**.txt'
+
+jobs:
+  update-index:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild index.json
+        run: |
+          python3 << 'EOF'
+          import os, json, uuid, re
+
+          chapters_dir = "chapters"
+          index_path = "index.json"
+
+          # Load existing index to preserve order and existing ids
+          existing = {}
+          if os.path.exists(index_path):
+              with open(index_path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+              for ch in data.get("chapters", []):
+                  existing[ch["file"]] = ch["id"]
+
+          chapters = []
+          txt_files = sorted(
+              [f for f in os.listdir(chapters_dir) if f.endswith(".txt")],
+              key=lambda f: os.path.getmtime(os.path.join(chapters_dir, f))
+          )
+
+          for filename in txt_files:
+              file_path = f"chapters/{filename}"
+              title = os.path.splitext(filename)[0]
+
+              # Reuse existing id or generate new short one
+              ch_id = existing.get(file_path, uuid.uuid4().hex[:8])
+
+              # Read first line to extract Telegram link
+              telegram = None
+              with open(os.path.join(chapters_dir, filename), "r", encoding="utf-8") as f:
+                  first_line = f.readline().strip()
+              match = re.match(r'^!Telegram:\s*(https?://\S+)', first_line)
+              if match:
+                  telegram = match.group(1)
+
+              entry = {
+                  "id": ch_id,
+                  "title": title,
+                  "file": file_path
+              }
+              if telegram:
+                  entry["telegram"] = telegram
+
+              chapters.append(entry)
+
+          result = {"chapters": chapters}
+
+          with open(index_path, "w", encoding="utf-8") as f:
+              json.dump(result, f, ensure_ascii=False, indent=2)
+
+          print(f"index.json updated with {len(chapters)} chapter(s).")
+          for ch in chapters:
+              print(f"  [{ch['id']}] {ch['title']} -> {ch['file']}")
+          EOF
+
+      - name: Commit index.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.json
+          git diff --cached --quiet && echo "No changes to commit." || \
+            git commit -m "chore: update index.json [skip ci]"
+          git push
